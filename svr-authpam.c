@@ -211,8 +211,14 @@ void svr_auth_pam() {
 	userData.passwd = password;
 
 	/* Init pam */
-	if ((rc = pam_start("sshd", NULL, &pamConv, &pamHandlep)) != PAM_SUCCESS) {
+	if ((rc = pam_start("sshd", ses.authtate.pw_name, &pamConv, &pamHandlep)) != PAM_SUCCESS) {
 		dropbear_log(LOG_WARNING, "pam_start() failed, rc=%d, %s", 
+				rc, pam_strerror(pamHandlep, rc));
+		goto cleanup;
+	}
+
+	if ((rc = pam_set_item(pamHandlep, PAM_RHOST, svr_ses.remotehost)) != PAM_SUCCESS) {
+		dropbear_log(LOG_WARNING, "pam_set_item(PAM_RHOST) failed, rc=%d, %s",
 				rc, pam_strerror(pamHandlep, rc));
 		goto cleanup;
 	}
