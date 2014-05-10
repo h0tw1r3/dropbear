@@ -186,8 +186,6 @@ void svr_auth_pam() {
 		&userData /* submitted to pamvConvFunc as appdata_ptr */ 
 	};
 
-	pam_handle_t* pamHandlep = NULL;
-
 	unsigned char * password = NULL;
 	unsigned int passwordlen;
 
@@ -211,35 +209,35 @@ void svr_auth_pam() {
 	userData.passwd = password;
 
 	/* Init pam */
-	if ((rc = pam_start("sshd", ses.authtate.username, &pamConv, &pamHandlep)) != PAM_SUCCESS) {
+	if ((rc = pam_start("sshd", ses.authstate.username, &pamConv, &ses.authstate.pam)) != PAM_SUCCESS) {
 		dropbear_log(LOG_WARNING, "pam_start() failed, rc=%d, %s", 
-				rc, pam_strerror(pamHandlep, rc));
+				rc, pam_strerror(ses.authstate.pam, rc));
 		goto cleanup;
 	}
 
-	if ((rc = pam_set_item(pamHandlep, PAM_RHOST, svr_ses.remotehost)) != PAM_SUCCESS) {
+	if ((rc = pam_set_item(ses.authstate.pam, PAM_RHOST, svr_ses.remotehost)) != PAM_SUCCESS) {
 		dropbear_log(LOG_WARNING, "pam_set_item(PAM_RHOST) failed, rc=%d, %s",
-				rc, pam_strerror(pamHandlep, rc));
+				rc, pam_strerror(ses.authstate.pam, rc));
 		goto cleanup;
 	}
 
 	/* just to set it to something */
-	if ((rc = pam_set_item(pamHandlep, PAM_TTY, "ssh") != PAM_SUCCESS)) {
+	if ((rc = pam_set_item(ses.authstate.pam, PAM_TTY, "ssh") != PAM_SUCCESS)) {
 		dropbear_log(LOG_WARNING, "pam_set_item() failed, rc=%d, %s",
-				rc, pam_strerror(pamHandlep, rc));
+				rc, pam_strerror(ses.authstate.pam, rc));
 		goto cleanup;
 	}
 
 #ifdef HAVE_PAM_FAIL_DELAY
 	/* We have our own random delay code already, disable PAM's */
-	(void) pam_fail_delay(pamHandlep, 0 /* musec_delay */);
+	(void) pam_fail_delay(ses.authstate.pam, 0 /* musec_delay */);
 #endif
 
-	/* (void) pam_set_item(pamHandlep, PAM_FAIL_DELAY, (void*) pamDelayFunc); */
+	/* (void) pam_set_item(ses.authstate.pam, PAM_FAIL_DELAY, (void*) pamDelayFunc); */
 
-	if ((rc = pam_authenticate(pamHandlep, 0)) != PAM_SUCCESS) {
+	if ((rc = pam_authenticate(ses.authstate.pam, 0)) != PAM_SUCCESS) {
 		dropbear_log(LOG_WARNING, "pam_authenticate() failed, rc=%d, %s", 
-				rc, pam_strerror(pamHandlep, rc));
+				rc, pam_strerror(ses.authstate.pam, rc));
 		dropbear_log(LOG_WARNING,
 				"Bad PAM password attempt for '%s' from %s",
 				ses.authstate.username,
@@ -248,9 +246,11 @@ void svr_auth_pam() {
 		goto cleanup;
 	}
 
-	if ((rc = pam_acct_mgmt(pamHandlep, 0)) != PAM_SUCCESS) {
+	if ((rc = pam_acct_mgmt(ses.authstate.pam, 0)) == PAM_NEW_AUTHTOK_REQD)
+		rc = pam_chauthtok(ses.authstate.pam, PAM_CHANGE_EXPIRED_AUTHTOK);
+	if (rc != PAM_SUCCESS) {
 		dropbear_log(LOG_WARNING, "pam_acct_mgmt() failed, rc=%d, %s", 
-				rc, pam_strerror(pamHandlep, rc));
+				rc, pam_strerror(ses.authstate.pam, rc));
 		dropbear_log(LOG_WARNING,
 				"Bad PAM password attempt for '%s' from %s",
 				ses.authstate.username,
@@ -258,21 +258,72 @@ void svr_auth_pam() {
 		send_msg_userauth_failure(0, 1);
 		goto cleanup;
 	}
+
+	/* establish requested credentials */
+	if ((rc = pam_setcred(ses.authstate.pam, PAM_ESTABLISH_CRED)) != PAM_SUCCESS) {
+		dropbear_log(LOG_WARNING, "pam_setcred() failed, rc=%d, %s",
+			rc, pam_strerror(ses.authstate.pam, rc));
+		send_msg_userauth_failure(0, 1);
+		goto cleanup;
+	}
+	ses.authstate.pam_credset = 1;
 
 	/* successful authentication */
 	dropbear_log(LOG_NOTICE, "PAM password auth succeeded for '%s' from %s",
 			ses.authstate.username,
 			svr_ses.addrstring);
+
+	if ((rc = pam_open_session(ses.authstate.pam, 0)) != PAM_SUCCESS) {
+		dropbear_log(LOG_WARNING, "pam_open_session() failed, rc=%d, %s",
+			rc, pam_strerror(ses.authstate.pam, rc));
+		send_msg_userauth_failure(0, 1);
+		goto cleanup;
+	}
+	ses.authstate.pam_sesopen = 1;
+
 	send_msg_userauth_success();
+	goto success;
 
 cleanup:
+	svr_auth_pam_cleanup();
+
+success:
 	if (password != NULL) {
 		m_burn(password, passwordlen);
 		m_free(password);
 	}
-	if (pamHandlep != NULL) {
+}
+
+void svr_auth_pam_cleanup() {
+	int rc = PAM_SUCCESS;
+
+	if (ses.authstate.pam != NULL) {
+		if (ses.authstate.pam_sesopen) {
+			if ((rc = pam_close_session(ses.authstate.pam, PAM_SILENT)) != PAM_SUCCESS) {
+				dropbear_log(LOG_WARNING, "pam_close_session() failed, rc=%d, %s",
+						rc, pam_strerror(ses.authstate.pam, rc));
+			}
+			ses.authstate.pam_sesopen = 0;
+		}
+		if (ses.authstate.pam_credset) {
+			if ((rc = pam_setcred(ses.authstate.pam, PAM_DELETE_CRED)) != PAM_SUCCESS) {
+				dropbear_log(LOG_WARNING, "pam_setcred() failed, rc=%d, %s",
+						rc, pam_strerror(ses.authstate.pam, rc));
+			}
+			ses.authstate.pam_credset = 0;
+		}
+
 		TRACE(("pam_end"))
-		(void) pam_end(pamHandlep, 0 /* pam_status */);
+		(void) pam_end(ses.authstate.pam, 0);
+	}
+}
+
+void svr_auth_pam_env() {
+	char **pam_envlist, **pam_env;
+	if ((pam_envlist = pam_getenvlist(ses.authstate.pam)) != NULL) {
+		for (pam_env = pam_envlist; *pam_env != NULL; ++pam_env) {
+			putenv(*pam_env);
+		}
 	}
 }
 

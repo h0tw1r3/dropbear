@@ -308,6 +308,10 @@ static void closechansess(struct Channel *channel) {
 	svr_agentcleanup(chansess);
 #endif
 
+#ifdef ENABLE_SVR_PAM_AUTH
+	svr_auth_pam_cleanup();
+#endif
+
 	/* clear child pid entries */
 	for (i = 0; i < svr_ses.childpidsize; i++) {
 		if (svr_ses.childpids[i].chansess == chansess) {
@@ -890,6 +894,10 @@ static void execchild(void *user_data) {
 	}
 #endif /* HAVE_CLEARENV */
 #endif /* DEBUG_VALGRIND */
+
+#ifdef ENABLE_SVR_PAM_AUTH
+	svr_auth_pam_env();
+#endif
 
 	/* We can only change uid/gid as root ... */
 	if (getuid() == 0) {

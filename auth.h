@@ -29,6 +29,14 @@
 #include "signkey.h"
 #include "chansession.h"
 
+#ifdef ENABLE_SVR_PAM_AUTH
+#if defined(HAVE_SECURITY_PAM_APPL_H)
+#include <security/pam_appl.h>
+#elif defined (HAVE_PAM_PAM_APPL_H)
+#include <pam/pam_appl.h>
+#endif
+#endif
+
 void svr_authinitialise();
 void cli_authinitialise();
 
@@ -40,6 +48,8 @@ void send_msg_userauth_banner(buffer *msg);
 void svr_auth_password();
 void svr_auth_pubkey();
 void svr_auth_pam();
+void svr_auth_pam_cleanup();
+void svr_auth_pam_env();
 
 #ifdef ENABLE_SVR_PUBKEY_OPTIONS
 int svr_pubkey_allows_agentfwd();
@@ -121,6 +131,11 @@ struct AuthState {
 	char *pw_passwd;
 #ifdef ENABLE_SVR_PUBKEY_OPTIONS
 	struct PubKeyOptions* pubkey_options;
+#endif
+#ifdef ENABLE_SVR_PAM_AUTH
+	pam_handle_t* pam;
+	unsigned pam_sesopen : 1;
+	unsigned pam_credset : 1;
 #endif
 };
 
